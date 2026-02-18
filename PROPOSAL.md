@@ -9,6 +9,7 @@ Recently, researchers have developed synthetic tests that examine the robustness
 
 Thus, this study sets out to do the following:
 - Address the limitations of the aformentioned studies by evaluating the impact of DMS mutations on regulatory classification at different context window sizes and levels of quantization
+    - Sources: MaveDB, VAMP-seq
 - Use a genetic algorithm in combination with a PWM trained on the relevant reference genome to generate reasonable perturberations (in reasonable proportion) that sketch the boundary of model perception
     - This method can be used to assesss both model generalizability and its sensitivity to clinical genetic variance.
     - The method would target specifically the flanking regions (chiefly spacers) of promoters etc. To test the independence of classifications from context.
