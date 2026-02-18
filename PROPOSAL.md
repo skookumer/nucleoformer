@@ -18,17 +18,25 @@ Thus, this study sets out to do the following:
 
 
 ## Bibliogrpahy
+
 [1] Nulsettes: https://arxiv.org/abs/2506.10271v3
+
 [2] Robustness: https://arxiv.org/abs/2409.19788v2
+
 [3] DNABert2: https://arxiv.org/abs/2306.15006
+
 [4] Nucleotide transformer: https://www.nature.com/articles/s41592-024-02523-z
+
 [5] Review: https://arxiv.org/abs/2412.07201
+
 [6] Keplerian vs newtonian understanding: https://arxiv.org/abs/2111.12210
+
 [7] Transformers need glasses!: https://arxiv.org/abs/2406.04267
 
 #AI Appendix
 
 Gemini 3: should a genome analysis model like DNABert2 be able to correctly identify a promoter region even if it is surrounded by mutations?
+
 Claude 4.5:
 - Would you say that the mutations in DMS datasets are more "legitimate" than random mutations?
 - I just have scores
