@@ -16,6 +16,14 @@ Thus, this study sets out to do the following:
 - Examine the hidden layer to see what the model is paying attention to
 - Synthesize these findings with similar models using natural language sequences.
 
+## Pitfalls
+
+- I've already got hg19 downloaded and working, and in correspondance with the DMS mutations along with their funcitonal scoring. I am fully confident in being able to build a PWM model and a genetic algorithm around it, along with using the hidden layers to guide mutation. A potential issue is runtime, though I can put this up on Explorer/Kaggle HPC.
+- The chief issue is the plausibility of the synthetic sequences. They most likely confirm existing existing findings but hopefully put a finer point on it, and speak more to practical applications than to the ultimate understanding of genomic grammar. The DMS mutations will likely be so small that the models will miss them, but that's the point.
+- I'm thinking of this project in light of developing better encoding methods for LLMs. I think the problem with these models is masked prediction. So ideally this study would test a complimentary encoding method that better apprehends genomic grammar. Obviously that kind of development is a ways off.
+
+
+
 
 ## Bibliogrpahy
 
