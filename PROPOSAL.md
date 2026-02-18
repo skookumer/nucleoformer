@@ -33,7 +33,7 @@ Thus, this study sets out to do the following:
 
 [7] Transformers need glasses!: https://arxiv.org/abs/2406.04267
 
-#AI Appendix
+# AI Appendix
 
 Gemini 3: should a genome analysis model like DNABert2 be able to correctly identify a promoter region even if it is surrounded by mutations?
 
