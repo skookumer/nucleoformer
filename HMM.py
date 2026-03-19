@@ -41,7 +41,7 @@ class HMM:
     def __init__(self, n_states, k, n_bases=6, model_name="model_a", encoder_decoder=None, fresh_start=False):
         self.n_states = n_states
         self.k = k
-        self.vocab = self.dictionize(n_bases, k)
+        self.dictionize(n_bases, k)
         self.vocab_size = len(self.vocab)
 
         if encoder_decoder == None:
@@ -57,7 +57,8 @@ class HMM:
             self.init_matrices()
     
     def dictionize(self, n_bases=6, k=3):
-        return {v: k for k, v in enumerate(product(range(n_bases), repeat=k))}
+        self.vocab = {v: k for k, v in enumerate(product(range(n_bases), repeat=k))}
+        self.vocab_inv = {k: v for k, v in enumerate(self.vocab)}
     
     def tokenize(self, seq):
         win_size = self.k
@@ -93,9 +94,10 @@ class HMM:
         T = len(seq)
         N = self.n_states
 
-        V = np.full((N, T) - np.inf)
+        V = np.full((N, T), -np.inf)
         BP = np.zeros((N, T), dtype=int)
 
+        #should I use initial probabilities here?
         V[:, 0] = self.pi + self.emission_matrix[:, seq[0]]     #initial probs + first observation
 
         for t in range(1, T):
@@ -106,12 +108,51 @@ class HMM:
                 BP[s, t] = best_score
         
         best_path = np.zeros(T, dtype=int)
-        best_path[T-1] = np.argmax(V[: T-1])
+        best_path[T-1] = np.argmax(V[:, T-1])
+        
         
         for t in range(T-2, -1, -1):
             best_path[t] = BP[best_path[t+1], t+1]
         
         return best_path
+    
+    def gen_viterbi(self, seq, method="max_p"):
+
+        def pyramid(n):
+            half = np.clip(np.arange(1, n//2 + 2), a_min=1, a_max=self.k)
+            if n % 2 == 0:
+                return np.concatenate([half, half[::-1]])
+            else:
+                return np.concatenate([half, half[-2::-1]])
+
+        states = self.viterbi(seq)
+
+        if method == "max_p":
+            T = len(states)
+            weights = pyramid(T)
+            token_probs = self.emission_matrix[states]
+            best_indices = np.argmax(token_probs, axis=1)
+            best_probs = token_probs[np.arange(T), best_indices]
+            selection_matrix = np.zeros((T, len(weights)))
+            i = 0
+            for t in range(T):
+                token = self.vocab_inv[best_indices[t]]
+                for j in range(self.k):
+                    selection_matrix[t, i + j] = token[j]
+                i += 1
+            output = []
+            i = 0
+            t = 0
+            while i < len(weights):
+                window_height = weights[t]
+                values = selection_matrix[t:t+window_height, i]
+                probs = best_probs[t:t+window_height]
+                output.append(int(values[np.argmax(probs)]))
+                i += 1
+                if i > self.k:
+                    t += 1
+            return self.encoder_decoder.decode_seq(output)
+            
 
     def fwd(self, seq):
         T = len(seq)
@@ -137,7 +178,8 @@ class HMM:
     def baum_welch(self, seq, iterations=10):
         T = len(seq)
 
-        for i in range(iterations):
+        #for i in range(iterations):
+        if True:
             A = self.fwd(seq)
             B = self.bwd(seq)
             p_x = logsumexp(A[:, -1])
@@ -156,8 +198,28 @@ class HMM:
                     self.emission_matrix[:, k] = logsumexp(G[:, mask], axis=1)
                 
             self.emission_matrix -= logsumexp(self.emission_matrix, axis=1, keepdims=True)
+    
+    def MLE(self, seq, states):
+        T = len(seq)
 
-    def train_model(self, seqs, epochs=3, toprint=False):
+        A = np.full((self.n_states, self.n_states), -np.inf)
+        for t in range(T - 1):
+            i, j = states[t], states[t+1]
+            A[i, j] = np.logaddexp(A[i, j], np.log(1e-10))
+        self.transition_matrix = A - logsumexp(A, axis=1, keepdims=True)
+
+        E = np.full((self.n_states, self.vocab_size), -np.inf)
+        for t in range(T):
+            s, k = states[t], seq[t]
+            E[s, k] = np.logaddexp(E[s, k], np.log(1e-10))
+        self.emission_matrix = E - logsumexp(E, axis=1, keepdims=True)
+
+        #probably not necessary
+        # self.pi = np.full(self.n_states, -np.inf)
+        # self.pi[states[0]] = 0.0
+
+
+    def train_model_BW(self, seqs, epochs=3, toprint=False):
 
         for i in range(epochs):
             if toprint:
@@ -215,10 +277,13 @@ if __name__ == "__main__":
 
     model = HMM(n_states=5, k=3, n_bases=6, model_name="testmodel", fresh_start=False)
     # model.train_model(sequences)
-    print(model.emission_matrix)
-    print(model.transition_matrix)
-    print(model.pi)
-    # model.viterbi()
+    # print(model.emission_matrix)
+    # print(model.transition_matrix)
+    # print(model.pi)
+    seq = model.encoder_decoder.encode_seq(reference, k=0)
+    seq = model.tokenize(seq)
+    x = model.gen_viterbi(seq)
+    print(x)
 
 
 
