@@ -3,6 +3,7 @@ from scipy.special import logsumexp
 from pathlib import Path
 from itertools import product
 import random
+from numba import njit
 
 home = Path(__file__).parent
 
@@ -62,10 +63,14 @@ class HMM:
         self.vocab = {v: k for k, v in enumerate(product(range(n_bases), repeat=k))}
         self.vocab_inv = {k: v for k, v in enumerate(self.vocab)}
     
-    def tokenize(self, seq):
+    def tokenize(self, seq, states=None):
+        if isinstance(seq[0], str):
+            seq = self.encoder_decoder.encode_seq(seq)
         win_size = self.k
         tokens = [self.vocab[tuple(seq[i:i+win_size])] for i in range(len(seq) - self.k + 1)]
-        return np.array(tokens)
+        if states is None:
+            return np.array(tokens)
+        return np.array(tokens), states[self.k - 1:]
 
 
     def load_matrices(self):
@@ -78,7 +83,7 @@ class HMM:
         N = self.n_states    
         self.transition_matrix = self.log_norm_random((N, N))
         self.emission_matrix = self.log_norm_random((N, self.vocab_size))
-        self.pi = self.log_norm_random((N,))
+        self.pi = np.full(N, -np.log(N))
     
     def save_matrices(self):   
         np.savez(self.matrix_path,
@@ -228,17 +233,9 @@ class HMM:
     
     def MLE(self, seq, states):
         T = len(seq)
-
-        A = np.full((self.n_states, self.n_states), -np.inf)
-        for t in range(T - 1):
-            i, j = states[t], states[t+1]
-            A[i, j] = np.logaddexp(A[i, j], 0.0)
+        A = self.count_transitions(T, self.n_states, states)
         self.transition_matrix = A - logsumexp(A, axis=1, keepdims=True)
-
-        E = np.full((self.n_states, self.vocab_size), -np.inf)
-        for t in range(T):
-            s, k = states[t], seq[t]
-            E[s, k] = np.logaddexp(E[s, k], 0.0)
+        E = self.count_emissions(T, self.n_states, self.vocab_size, states, seq)
         self.emission_matrix = E - logsumexp(E, axis=1, keepdims=True)
 
         #probably not necessary
@@ -247,26 +244,44 @@ class HMM:
     
 
     def MLE_E(self, seq, states):
+        if len(seq) != len(states):
+            raise ValueError("len seq, states does not match")
         T = len(seq)
-
-        A = np.full((self.n_states, self.n_states), -np.inf)
-        for t in range(T - 1):
-            i, j = states[t], states[t+1]
-            A[i, j] = np.logaddexp(A[i, j], 0.0)
-
-        E = np.full((self.n_states, self.vocab_size), -np.inf)
-        for t in range(T):
-            s, k = states[t], seq[t]
-            E[s, k] = np.logaddexp(E[s, k], 0.0)
-        
+        A = self.count_transitions(T, self.n_states, states)
+        E = self. count_emissions(T, self.n_states, self.vocab_size, states, seq)
         return A, E
     
     def MLE_M(self, A, E):
+        if type(A) == list:
+            A = np.array(A)
+            E = np.array(E)
+        self.transition_matrix = self.ln_norm(A)
+        self.emission_matrix = self.ln_norm(E)
+    
+    @staticmethod
+    def ln_norm(M):
+        ln_sums = logsumexp(M, axis=1, keepdims=True)
+        out = M - ln_sums
+        out[np.isneginf(ln_sums.squeeze())] = -np.inf
+        return out
 
-        A = np.array(A)
-        E = np.array(E)
-        self.transition_matrix = logsumexp(A, axis=0) - logsumexp(logsumexp(A, axis=0), axis=1, keepdims=True)
-        self.emission_matrix = logsumexp(E, axis=0) - logsumexp(logsumexp(E, axis=0), axis=1, keepdims=True)
+    @staticmethod
+    @njit
+    def count_transitions(T, n_states, states):
+        A = np.full((n_states, n_states), -np.inf)
+        for t in range(T - 1):
+            i, j = states[t], states[t+1]
+            A[i, j] = np.logaddexp(A[i, j], 0.0)
+        return A
+    
+    @staticmethod
+    @njit
+    def count_emissions(T, n_states, vocab_size, states, seq):
+        E = np.full((n_states, vocab_size), -np.inf)
+        for t in range(T):
+            s, k = states[t], seq[t]
+            E[s, k] = np.logaddexp(E[s, k], 0.0)
+        return E
         
 
 
