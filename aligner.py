@@ -101,10 +101,14 @@ def make_map_fast(chr_map, read_indices):
 
 class GeneLoader:
 
-    def __init__(self, name):
+    def __init__(self, name, toprint=False, random_seed=None):
+
+        if random_seed != None:
+            np.random.seed=random_seed
 
         # self.genome_fasta = get_reference_fasta(name)
         self.genome = pysam.FastaFile(ncbi_path / f"{name}.fa")
+        self.bw = pyBigWig.open(str(reference_path / "hg38.phyloP100way.bw"))
 
         aliases = pl.read_csv(
             reference_path / "chromAlias.txt",
@@ -116,7 +120,7 @@ class GeneLoader:
         aliases = aliases.filter(pl.col("source") == "refseq")
         self.refseq_aliases = dict(zip(aliases["accession"], aliases["UCSCname"]))
         
-        annot = pl.read_csv(
+        self.annot = pl.read_csv(
             ncbi_path / "genomic.gff",
             separator="\t",
             comment_prefix="#",
@@ -138,7 +142,7 @@ class GeneLoader:
         state_encoding = {v: i for i, v in enumerate([k for k in state_dict.keys() if k != "drop"])}
 
         for state in reversed(list(state_encoding.keys())):
-            regions = annot.filter(pl.col("type").is_in(state_dict[state]))
+            regions = self.annot.filter(pl.col("type").is_in(state_dict[state]))
             for start, end, chrom in zip(regions["start"].to_list(), regions["end"].to_list(), regions["chrom"].to_list()):
                 if chrom not in chrom_offsets:
                     continue
@@ -148,20 +152,26 @@ class GeneLoader:
         def in_range(inner, outer):
             return inner.start >= outer.start and inner.stop <= outer.stop
 
-        state_array = self.merge_nearby_states(state_array, 0, max_gap=2000)
+        state_array = self.merge_nearby_states(state_array, 0, max_gap=24000)
 
         change_points = np.where(np.diff(state_array))[0]
-        starts = np.concatenate([[0], change_points])
-        ends = np.concatenate([change_points - 1, [len(state_array) - 1]])
-        lengths = ends - starts
+        starts = np.concatenate([[0], change_points + 1])
+        ends = np.concatenate([change_points, [len(state_array) - 1]])
+        lengths = ends - starts + 1
         states = state_array[starts]
 
         chroms = []
+        chrom_starts = []
+        chrom_ends = []
+
         for i in range(len(starts)):
             r = range(starts[i], ends[i])
             for offset_range, chrom in offset_ranges.items():
                 if in_range(r, offset_range):
                     chroms.append(chrom)
+                    offset = offset_range.start
+                    chrom_starts.append(starts[i] - offset)
+                    chrom_ends.append(ends[i] - offset)
                     break
 
         self.nt_map = pl.DataFrame({
@@ -169,42 +179,39 @@ class GeneLoader:
             "start": starts,
             "end": ends,
             "len": lengths,
-            "chrom": chroms
+            "chrom": chroms,
+            "chrom_start": chrom_starts,
+            "chrom_end": chrom_ends
         })
-
-        reverse_encoding = {v: k for k, v in state_encoding.items()}
-        ids, counts = np.unique(state_array, return_counts=True)
-        unique_names = [reverse_encoding.get(i, "Unknown") for i in ids]
-        pdict = dict(zip(unique_names, counts))
-        total = sum(pdict.values())
-
-        print(f"{'Name':<20} {'Count':>8} {'Percentage':>10}")
-        print("-" * 40)
-        for key, value in pdict.items():
-            pct = (value / total) * 100
-            print(f"{key:<20} {int(value):>8} {pct:>9.1f}%")
-        print("-" * 40)
-        print(f"{'TOTAL':<20} {int(total):>8} {'100.0':>9}%")
-
-        x = self.nt_map.with_columns(
-            pl.col("state").shift(-1).alias("next_state")
-        ).group_by(["state", "next_state"]).len().sort("len")
-        x = x.with_columns([
-            pl.col("state").map_elements(lambda s: reverse_encoding.get(s, "null")).alias("state_name"),
-            pl.col("next_state").map_elements(lambda s: reverse_encoding.get(s, "null")).alias("next_state_name")
-        ])
-        with pl.Config(tbl_rows=100, tbl_cols=20):
-            print(x)
-
-            
-
+        self.state_array = state_array
+        self.max_len = len(state_array)
         
-        # .with_columns([
-        #     (pl.col("start") - 1).alias("start"),
-        #     (pl.col("end") - 1).alias("end"),
-        # ])
+        if toprint:
 
-        self.bw = pyBigWig.open(str(reference_path / "hg38.phyloP100way.bw"))
+            reverse_encoding = {v: k for k, v in state_encoding.items()}
+            ids, counts = np.unique(state_array, return_counts=True)
+            unique_names = [reverse_encoding.get(i, "Unknown") for i in ids]
+            pdict = dict(zip(unique_names, counts))
+            total = sum(pdict.values())
+
+            print(f"{'Name':<20} {'Count':>8} {'Percentage':>10}")
+            print("-" * 40)
+            for key, value in pdict.items():
+                pct = (value / total) * 100
+                print(f"{key:<20} {int(value):>8} {pct:>9.1f}%")
+            print("-" * 40)
+            print(f"{'TOTAL':<20} {int(total):>8} {'100.0':>9}%")
+
+            x = self.nt_map.with_columns(
+                pl.col("state").shift(-1).alias("next_state")
+            ).group_by(["state", "next_state"]).len().sort("len")
+            x = x.with_columns([
+                pl.col("state").map_elements(lambda s: reverse_encoding.get(s, "null")).alias("state_name"),
+                pl.col("next_state").map_elements(lambda s: reverse_encoding.get(s, "null")).alias("next_state_name")
+            ])
+            with pl.Config(tbl_rows=100, tbl_cols=20):
+                print(x)
+
 
     def merge_nearby_states(self, state_array, state_code, max_gap=4000):
         """Merge regions of state_code that are within max_gap bp of each other."""
@@ -237,21 +244,24 @@ class GeneLoader:
         return state_array
 
 
-        
+    def get_idx(self, idx=None):
+        if idx == None:
+            idx = np.random.randint(self.nt_map.shape[0])
+        row = self.nt_map.row(idx, named=True)
+        max_L = self.genome.get_reference_length(row["chrom"])
+        region = round(row["len"] * 0.1)
+        start = max(0, row["chrom_start"] - region)
+        end = min(max_L, row["chrom_end"] + region + 1)
+        seq = self.genome.fetch(row["chrom"], start, end)
+        # annot = self.annot.filter(pl.col("chrom") == row["chrom"])
+        ucsc_key = self.refseq_aliases[row["chrom"]]
+        conservation = self.bw.values(f"{ucsc_key}", start, end)
 
+        start = max(0, row["end"] - region)
+        end = min(max_L, row["start"] + region + 1)
+        states = self.state_array[start: end]
 
-    def test(self):
-
-
-
-        key = self.genome.references[0]
-        seq = self.genome.fetch(key)
-        annot = self.annot.filter(pl.col("chrom") == key)
-        ucsc_key = self.refseq_aliases[key]
-        conservation = self.bw.values(f"{ucsc_key}", annot["start"][0], annot["end"][0])
-        print(seq[:20])
-        print(annot)
-        print(conservation)
+        return seq, conservation, states
 
 
         
