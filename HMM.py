@@ -14,14 +14,16 @@ class Encoder_Decoder:
         self.base_map = self.init_base_encoding_map()
         self.decode_map = np.array(sequence_map)
     
-    def encode_seq(self, seq, k=0):
+    def encode_seq(self, seq, k=0, pad=False):
         bytes = np.frombuffer("".join(seq).encode(), dtype=np.uint8)
         if k == 0:
             return np.array([self.base_map[bytes[i]] for i in range(len(bytes))])
-        else:
+        elif pad:
             pad = [5 for _ in range(k - 1)]
             lmerized = pad + [self.base_map[bytes[i]] for i in range(len(bytes))] + pad
             return np.array(lmerized)
+        else:
+            return np.array([self.base_map[bytes[i]] for i in range(len(bytes))])
 
     def decode_seq(self, seq):
         return "".join(self.decode_map[seq])
@@ -199,24 +201,73 @@ class HMM:
                 
             self.emission_matrix -= logsumexp(self.emission_matrix, axis=1, keepdims=True)
     
+    def baum_welch_E(self, seq):
+        T = len(seq)
+        A = self.fwd(seq)
+        B = self.bwd(seq)
+        p_x = logsumexp(A[:, -1])
+        G = A + B - p_x
+
+        xi = np.zeros((T - 1, self.n_states, self.n_states))
+        for t in range(T - 1):
+            xi[t] = (A[:, t].reshape(-1, 1) + self.transition_matrix + 
+                    self.emission_matrix[:, seq[t+1]] + B[:, t+1] - p_x)
+        
+        return G, xi, p_x
+    
+    def baum_welch_M(self, G, xi, seqs):
+
+        self.transition_matrix = (logsumexp(xi, axis=0) - logsumexp(G[:, :-1], axis=1).reshape(-1, 1))
+
+        for k in range(self.vocab_size):
+            mask = np.concatenate([seq == k for seq in seqs])
+            if np.any(mask):
+                self.emission_matrix[:, k] = logsumexp(G[:, mask], axis=1)
+        
+        self.emission_matrix -= logsumexp(self.emission_matrix, axis=1, keepdims=True)
+    
     def MLE(self, seq, states):
         T = len(seq)
 
         A = np.full((self.n_states, self.n_states), -np.inf)
         for t in range(T - 1):
             i, j = states[t], states[t+1]
-            A[i, j] = np.logaddexp(A[i, j], np.log(1e-10))
+            A[i, j] = np.logaddexp(A[i, j], 0.0)
         self.transition_matrix = A - logsumexp(A, axis=1, keepdims=True)
 
         E = np.full((self.n_states, self.vocab_size), -np.inf)
         for t in range(T):
             s, k = states[t], seq[t]
-            E[s, k] = np.logaddexp(E[s, k], np.log(1e-10))
+            E[s, k] = np.logaddexp(E[s, k], 0.0)
         self.emission_matrix = E - logsumexp(E, axis=1, keepdims=True)
 
         #probably not necessary
         # self.pi = np.full(self.n_states, -np.inf)
         # self.pi[states[0]] = 0.0
+    
+
+    def MLE_E(self, seq, states):
+        T = len(seq)
+
+        A = np.full((self.n_states, self.n_states), -np.inf)
+        for t in range(T - 1):
+            i, j = states[t], states[t+1]
+            A[i, j] = np.logaddexp(A[i, j], 0.0)
+
+        E = np.full((self.n_states, self.vocab_size), -np.inf)
+        for t in range(T):
+            s, k = states[t], seq[t]
+            E[s, k] = np.logaddexp(E[s, k], 0.0)
+        
+        return A, E
+    
+    def MLE_M(self, A, E):
+
+        A = np.array(A)
+        E = np.array(E)
+        self.transition_matrix = logsumexp(A, axis=0) - logsumexp(logsumexp(A, axis=0), axis=1, keepdims=True)
+        self.emission_matrix = logsumexp(E, axis=0) - logsumexp(logsumexp(E, axis=0), axis=1, keepdims=True)
+        
 
 
     def train_model_BW(self, seqs, epochs=3, toprint=False):
