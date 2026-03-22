@@ -185,6 +185,7 @@ class GeneLoader:
         })
         self.state_array = state_array
         self.max_len = len(state_array)
+        self.states = list(state_encoding.keys())
         
         if toprint:
 
@@ -257,8 +258,8 @@ class GeneLoader:
         ucsc_key = self.refseq_aliases[row["chrom"]]
         conservation = self.bw.values(f"{ucsc_key}", start, end)
 
-        start = max(0, row["end"] - region)
-        end = min(max_L, row["start"] + region + 1)
+        start = max(0, row["start"] - region)
+        end = min(max_L, row["end"] + region + 1)
         states = self.state_array[start: end]
 
         return seq, conservation, states
