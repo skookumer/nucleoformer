@@ -1,4 +1,8 @@
 from aligner import get_reference_fasta, GeneLoader
+from genetic_algorithm import NSGA_II
+from HMM import HMM
+import numpy as np
+from pprint import pprint
 
 #curl -o datasets 'https://ftp.ncbi.nlm.nih.gov/pub/datasets/command-line/v2/linux-amd64/datasets'
 #chmod +x datasets
@@ -17,5 +21,26 @@ from aligner import get_reference_fasta, GeneLoader
 
 # # 4. Create the 'Index' so Python/Pysam can jump around the 3GB file instantly
 # samtools faidx hg38_primary.fa
-loader = GeneLoader("hg38_primary")
-# loader.test()
+
+
+
+LOADER = GeneLoader("hg38_primary")
+# print(loader.get_idx(1))
+# print(loader.get_idx(0))
+# loader.test(loader.nt_map.shape[0] - 1)
+# loader.test(2)
+MODEL = HMM(n_states=len(LOADER.states), k=6, n_bases=6, model_name="supervised_10k_oldschema")
+objectives = {
+    "cos_dist": {"reverse": False},
+    "ham_dist": {"reverse": False},
+    "hmm_prob": {"reverse": False}
+}
+GA = NSGA_II("test", objectives, MODEL, LOADER, pop_cap=2, idx=21)
+GA.load_popn()
+with np.printoptions(threshold=200, edgeitems=3):
+    for i in range(50):
+        GA.random_mutate_entry(0)
+        GA.random_mutate_entry(1)
+    GA.crossover(0, 1, 2)
+    print(GA.popn)
+
