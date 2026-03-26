@@ -10,6 +10,24 @@ import numpy as np
 from numba import njit
 import pyBigWig
 
+'''
+Notes 3/24
+enhancer above regulatory
+ignore immune
+
+parse regulatory to insulators, silencers, enhancers separately; list as regulatory element
+
+intergenic can't be gene
+region refers to entire chromosome
+a primary transcript includes introns
+
+Gene is a CDS that is comprised of exons and introns
+
+
+Use the image
+insulator, silencer, enhancher: regulatory regions of interest
+'''
+
 state_dict = {
     "promoter": ["promoter", "TATA_box", "CAAT_signal", "GC_rich_promoter_region", "CAGE_cluster", "nucleotide_motif", 
                  "nucleotide_cleavage_site", "conserved_region", "replication_start_site",],
@@ -102,6 +120,8 @@ def make_map_fast(chr_map, read_indices):
 class GeneLoader:
 
     def __init__(self, name, toprint=False, random_seed=None):
+
+        self.idx = 1
 
         if random_seed != None:
             np.random.seed=random_seed
@@ -245,12 +265,13 @@ class GeneLoader:
         return state_array
 
 
-    def get_idx(self, idx=None):
+    def get_idx(self, idx=None, with_row=False):
         if idx == None:
             idx = np.random.randint(self.nt_map.shape[0])
         row = self.nt_map.row(idx, named=True)
+        x = 40 if row["len"] < 20 else row["len"]
         max_L = self.genome.get_reference_length(row["chrom"])
-        region = round(row["len"] * 0.1)
+        region = round(x * 0.1)
         start = max(0, row["chrom_start"] - region)
         end = min(max_L, row["chrom_end"] + region + 1)
         seq = self.genome.fetch(row["chrom"], start, end)
@@ -261,8 +282,32 @@ class GeneLoader:
         start = max(0, row["start"] - region)
         end = min(max_L, row["end"] + region + 1)
         states = self.state_array[start: end]
+        if with_row:
+            entry =  {"seq": seq, "conv": np.array(conservation), "states": states}
+            for key in row:
+                entry[key] = row[key]
+            return entry
+        return {"seq": seq, "conv": conservation, "states": states}
 
-        return seq, conservation, states
+    def get_jobs(self, n_jobs=16, batch_size=1000):
+        jobs = []
+        for job in range(n_jobs):
+            jobs.append(self[self.idx: self.idx + batch_size])
+            self.idx += batch_size
+        return jobs
+
+    def reset_idx(self):
+        self.idx=1
+    
+    def __len__(self):
+        return self.nt_map.shape[0]
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            items = [self.get_idx(i) for i in range(*index.indices(len(self)))]
+            return {key: [item[key] for item in items] for key in items[0]}
+        return self.get_idx(index)
+    
 
 
         
