@@ -4,6 +4,8 @@ from pathlib import Path
 from itertools import product
 import random
 from numba import njit
+from collections import defaultdict
+from Levenshtein import distance
 
 home = Path(__file__).parent
 
@@ -18,15 +20,15 @@ class Encoder_Decoder:
     def encode_seq(self, seq, k=0, pad=False):
         bytes = np.frombuffer("".join(seq).encode(), dtype=np.uint8)
         if k == 0:
-            return np.array([self.base_map[bytes[i]] for i in range(len(bytes))])
+            return np.array([self.base_map[bytes[i]] for i in range(len(bytes))], dtype=np.uint8)
         elif pad:
             pad = [5 for _ in range(k - 1)]
             lmerized = pad + [self.base_map[bytes[i]] for i in range(len(bytes))] + pad
-            return np.array(lmerized)
+            return np.array(lmerized, dtype=np.uint8)
         else:
-            return np.array([self.base_map[bytes[i]] for i in range(len(bytes))])
+            return np.array([self.base_map[bytes[i]] for i in range(len(bytes))], dtype=np.uint8)
 
-    def decode_seq(self, seq):
+    def decode_seq(self, seq: np.array):
         return "".join(self.decode_map[seq])
 
     def init_base_encoding_map(self):
@@ -59,9 +61,13 @@ class HMM:
         else:
             self.init_matrices()
     
-    def dictionize(self, n_bases=6, k=3):
+    def dictionize(self, n_bases=6, k=3, avoid={4, 5}):
         self.vocab = {v: k for k, v in enumerate(product(range(n_bases), repeat=k))}
         self.vocab_inv = {k: v for k, v in enumerate(self.vocab)}
+        self.prefix_lookup = defaultdict(list)
+        for kmer, idx in self.vocab.items():
+            if not any(b in avoid for b in kmer):
+                self.prefix_lookup[kmer[:-1]].append(idx)
     
     def tokenize(self, seq, states=None):
         if isinstance(seq[0], str):
@@ -69,8 +75,8 @@ class HMM:
         win_size = self.k
         tokens = [self.vocab[tuple(seq[i:i+win_size])] for i in range(len(seq) - self.k + 1)]
         if states is None:
-            return np.array(tokens)
-        return np.array(tokens), states[self.k - 1:]
+            return np.array(tokens, dtype=np.uint32)
+        return np.array(tokens, dtype=np.uint32), states[self.k - 1:]
 
 
     def load_matrices(self):
@@ -159,36 +165,64 @@ class HMM:
                 if i > self.k:
                     t += 1
             return self.encoder_decoder.decode_seq(output)
-            
-
-    def fwd(self, seq):
-        T = len(seq)
-        A = np.full((self.n_states, T), -np.inf)
-        A[:, 0] = self.pi + self.emission_matrix[:, seq[0]]     #initial probs + first observation
-
-        for t in range(1, T):
-            for s in range(self.n_states):
-                prev = logsumexp(A[:, t-1] + self.transition_matrix[:, s])
-                A[s, t] = prev + self.emission_matrix[s, seq[t]]
-        return A
     
-    def bwd(self, seq):
-        T = len(seq)
-        B = np.full((self.n_states, T), -np.inf)
-        B[:, T-1] = 0
 
-        for t in range(T-2, -1, -1):
-            for s in range(self.n_states):
-                B[s, t] = logsumexp(self.transition_matrix[s, :] + self.emission_matrix[:, seq[t + 1]] + B[:, t+1])
-        return B
+    def prefixed_gen(self, prefix, current_kmer, current_state, prev_state):
+        enc_pfx = tuple(int(v) for v in self.encoder_decoder.encode_seq(prefix))
+        enc_kmer = tuple(int(v) for v in self.encoder_decoder.encode_seq(current_kmer))
+        current_token_col = self.vocab[enc_kmer]
+
+        if enc_pfx in self.prefix_lookup:
+            em_cols = self.prefix_lookup[enc_pfx].copy()
+        else:
+            return None, None
+        
+        em_cols.remove(current_token_col)
+
+        #em_cols contains indices
+        em_sub = self.emission_matrix[:, em_cols].copy()                    #contains probabilities
+        em_sub[current_state, :] = -np.inf
+        em_scores = logsumexp(em_sub, axis=1)
+        scores = self.transition_matrix[prev_state, :] + em_scores
+        scores[current_state] = -np.inf
+        probs = np.exp(scores - np.max(scores[scores != -np.inf]))
+        probs /= probs.sum()
+        new_state = np.random.choice(np.arange(self.n_states), p=probs)
+
+        em_new = em_sub[new_state, :]                                       #contains probabilities
+        probs = np.exp(em_new - np.max(em_new))
+        probs /= probs.sum()
+        new_token = em_cols[np.random.choice(len(em_cols), p=probs)]        #map probabilities back to indices
+        kmer = np.array(self.vocab_inv[new_token])
+        nucleotides = self.encoder_decoder.decode_seq(kmer)
+        return nucleotides[-1], new_state
     
+    def check_next_nucleotide(self, kmer, state):
+        enc_kmer = tuple(int(v) for v in self.encoder_decoder.encode_seq(kmer))
+        return self.emission_matrix[state, self.vocab[enc_kmer]] > -np.inf
+    
+    def fixed_state_gen(self, prefix, target_state):
+        enc_pfx = tuple(int(v) for v in self.encoder_decoder.encode_seq(prefix))
+        if enc_pfx in self.prefix_lookup:
+            em_cols = self.prefix_lookup[enc_pfx].copy()
+        else:
+            raise ValueError("prefix failure")
+        em_row = self.emission_matrix[target_state, em_cols]
+        probs = np.exp(em_row - np.max(em_row))
+        probs /= probs.sum()
+        new_token = em_cols [np.random.choice(len(em_cols), p=probs)]
+        kmer = np.array(self.vocab_inv[new_token])
+        nucleotides = self.encoder_decoder.decode_seq(kmer)
+        return nucleotides[-1]
+
+
     def baum_welch(self, seq, iterations=10):
         T = len(seq)
 
         #for i in range(iterations):
         if True:
-            A = self.fwd(seq)
-            B = self.bwd(seq)
+            A = self.fwd(self.n_states, seq, self.pi, self.emission_matrix, self.transition_matrix)
+            B = self.bwd(self.n_states, seq, self.emission_matrix, self.transition_matrix)
             p_x = logsumexp(A[:, -1])
             G = A + B - p_x
 
@@ -205,31 +239,104 @@ class HMM:
                     self.emission_matrix[:, k] = logsumexp(G[:, mask], axis=1)
                 
             self.emission_matrix -= logsumexp(self.emission_matrix, axis=1, keepdims=True)
+
+
+    @staticmethod
+    @njit(cache=False)
+    def fwd(n_states, seq, pi, emission_matrix, transition_matrix):
+        T = len(seq)
+        A = np.full((n_states, T), -np.inf)
+        A[:, 0] = pi + emission_matrix[:, seq[0]]     #initial probs + first observation
+
+        for t in range(1, T):
+            for s in range(n_states):
+                c = A[:, t-1] + transition_matrix[:, s]
+                max_a = np.max(c)
+                prev = max_a + np.log(np.sum(np.exp(c - max_a)))
+                A[s, t] = prev + emission_matrix[s, seq[t]]
+        return A
     
+    @staticmethod
+    @njit(cache=False)
+    def bwd(n_states, seq, emission_matrix, transition_matrix):
+        T = len(seq)
+        B = np.full((n_states, T), -np.inf)
+        B[:, T-1] = 0
+
+        for t in range(T-2, -1, -1):
+            for s in range(n_states):
+                c = transition_matrix[s, :] + emission_matrix[:, seq[t + 1]] + B[:, t+1]
+                max_a = np.max(c)
+                B[s, t] = max_a + np.log(np.sum(np.exp(c - max_a)))
+        return B
+        
+    @staticmethod
+    @njit(cache=False)
+    def make_xi(n_states, T, A, B, p_x, seq, emission_matrix, transition_matrix):
+        xi = np.zeros((T - 1, n_states, n_states))
+        for t in range(T - 1):
+            x = seq[t+1]
+            a_t = A[t].reshape(-1, 1)
+            em = emission_matrix[x].reshape(1, -1) #right reshape?
+            b_t = B[t+1]
+            xi[t] = a_t + transition_matrix + em + b_t - p_x
+            # xi[t] = A[t].reshape(-1, 1) + transition_matrix + emission_matrix[seq[t+1]].reshape(1, -1) + B[:, t+1] - p_x
+        return xi
+    
+    def baum_welch_E_batch(self, seqs):
+        return [self.baum_welch_E(self.tokenize(seq)) for seq in seqs]
+            
     def baum_welch_E(self, seq):
         T = len(seq)
-        A = self.fwd(seq)
-        B = self.bwd(seq)
+        A = self.fwd(self.n_states, seq, self.pi, self.emission_matrix, self.transition_matrix)
+        B = self.bwd(self.n_states, seq, self.emission_matrix, self.transition_matrix)
         p_x = logsumexp(A[:, -1])
         G = A + B - p_x
-
-        xi = np.zeros((T - 1, self.n_states, self.n_states))
-        for t in range(T - 1):
-            xi[t] = (A[:, t].reshape(-1, 1) + self.transition_matrix + 
-                    self.emission_matrix[:, seq[t+1]] + B[:, t+1] - p_x)
-        
+        xi = self.make_xi(self.n_states, T, 
+                          np.ascontiguousarray(A.T), 
+                          np.ascontiguousarray(B.T), 
+                          p_x, seq, 
+                          np.ascontiguousarray(self.emission_matrix.T), 
+                          self.transition_matrix)
         return G, xi, p_x
     
-    def baum_welch_M(self, G, xi, seqs):
+    def posterior_decode(self, seq):
+        T = len(seq)
+        A = self.fwd(self.n_states, seq, self.pi, self.emission_matrix, self.transition_matrix)
+        B = self.bwd(self.n_states, seq, self.emission_matrix, self.transition_matrix)
+        p_x = logsumexp(A[:, -1])
+        G = A + B - p_x
+        return np.argmax(G, axis=0), p_x
+    
+    def ll_only(self, seq):
+        A = self.fwd(self.n_states, seq, self.pi, self.emission_matrix, self.transition_matrix)
+        p_x = logsumexp(A[:, -1])
+        return p_x
 
-        self.transition_matrix = (logsumexp(xi, axis=0) - logsumexp(G[:, :-1], axis=1).reshape(-1, 1))
+    def baum_welch_M(self, G, xi, seqs, smooth=-700):
+        if isinstance(G, tuple):
+            xi_sum = np.full((self.n_states, self.n_states), -np.inf)
+            G_sum = np.full(self.n_states, -np.inf)
 
+            for g, x in zip(G, xi):
+                T = x.shape[0]
+                log_T = np.log(T)
+                xi_sum = np.logaddexp(xi_sum, logsumexp(x, axis=0) - log_T)
+                G_sum = np.logaddexp(G_sum, logsumexp(g[:, :-1], axis=1) - log_T)
+
+            self.transition_matrix = xi_sum - G_sum.reshape(-1, 1)
+        else:
+            self.transition_matrix = (logsumexp(xi, axis=0) - logsumexp(G[:, :-1], axis=1).reshape(-1, 1))
+
+        em_num = np.full((self.n_states, self.vocab_size), -np.inf)
         for k in range(self.vocab_size):
-            mask = np.concatenate([seq == k for seq in seqs])
+            mask = seqs == k
             if np.any(mask):
-                self.emission_matrix[:, k] = logsumexp(G[:, mask], axis=1)
-        
-        self.emission_matrix -= logsumexp(self.emission_matrix, axis=1, keepdims=True)
+                em_num[:, k] = logsumexp(G[:, mask], axis=1)
+
+        em_num = np.where(em_num == -np.inf, smooth, em_num)
+        self.emission_matrix = em_num - logsumexp(em_num, axis=1, keepdims=True)
+
     
     def MLE(self, seq, states):
         T = len(seq)
@@ -237,12 +344,7 @@ class HMM:
         self.transition_matrix = A - logsumexp(A, axis=1, keepdims=True)
         E = self.count_emissions(T, self.n_states, self.vocab_size, states, seq)
         self.emission_matrix = E - logsumexp(E, axis=1, keepdims=True)
-
-        #probably not necessary
-        # self.pi = np.full(self.n_states, -np.inf)
-        # self.pi[states[0]] = 0.0
     
-
     def MLE_E(self, seq, states):
         if len(seq) != len(states):
             raise ValueError("len seq, states does not match")
@@ -253,8 +355,8 @@ class HMM:
     
     def MLE_M(self, A, E):
         if type(A) == list:
-            A = np.array(A)
-            E = np.array(E)
+            A = np.sum(A, axis=0)
+            E = np.sum(E, axis=0)
         self.transition_matrix = self.ln_norm(A)
         self.emission_matrix = self.ln_norm(E)
     
@@ -266,21 +368,21 @@ class HMM:
         return out
 
     @staticmethod
-    @njit
+    @njit(cache=False)
     def count_transitions(T, n_states, states):
-        A = np.full((n_states, n_states), -np.inf)
+        A = np.full((n_states, n_states), 0)
         for t in range(T - 1):
             i, j = states[t], states[t+1]
-            A[i, j] = np.logaddexp(A[i, j], 0.0)
+            A[i, j] += 1
         return A
     
     @staticmethod
-    @njit
+    @njit(cache=False)
     def count_emissions(T, n_states, vocab_size, states, seq):
-        E = np.full((n_states, vocab_size), -np.inf)
+        E = np.full((n_states, vocab_size), 0)
         for t in range(T):
             s, k = states[t], seq[t]
-            E[s, k] = np.logaddexp(E[s, k], 0.0)
+            E[s, k] += 1
         return E
         
 
