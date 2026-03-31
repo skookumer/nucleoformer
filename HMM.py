@@ -5,7 +5,6 @@ from itertools import product
 import random
 from numba import njit
 from collections import defaultdict
-from Levenshtein import distance
 
 home = Path(__file__).parent
 
@@ -33,7 +32,7 @@ class Encoder_Decoder:
 
     def init_base_encoding_map(self):
         '''
-        Returns mapping for binary/ASCII (not sure) encoded strings to numbers
+        Returns mapping for binary/ASCII encoded strings to numbers
         '''
         base_map = np.zeros(256, dtype=np.uint8)
         for i in range(len(self.sequence_map)):
@@ -101,33 +100,36 @@ class HMM:
             m = np.random.rand(*shape) + eps
             m /= m.sum(axis=-1, keepdims=True)
             return np.log(m)
-
-    def viterbi(self, seq):
-        
-        T = len(seq)
-        N = self.n_states
-
+    
+    @staticmethod
+    @njit(cache=True)
+    def _viterbi_fast(seq, transition_matrix, emission_matrix, pi, T, N):
         V = np.full((N, T), -np.inf)
-        BP = np.zeros((N, T), dtype=int)
+        BP = np.zeros((N, T), dtype=np.int64)
 
         #should I use initial probabilities here?
-        V[:, 0] = self.pi + self.emission_matrix[:, seq[0]]     #initial probs + first observation
+        V[:, 0] = pi + emission_matrix[:, seq[0]]     #initial probs + first observation
 
         for t in range(1, T):
             for s in range(N):
-                scores = V[:, t - 1] + self.transition_matrix[:, s]
+                scores = V[:, t - 1] + transition_matrix[:, s]
                 best_score = np.argmax(scores)
-                V[s, t] = scores[best_score] + self.emission_matrix[s, seq[t]]
+                V[s, t] = scores[best_score] + emission_matrix[s, seq[t]]
                 BP[s, t] = best_score
         
-        best_path = np.zeros(T, dtype=int)
+        best_path = np.zeros(T, dtype=np.int64)
         best_path[T-1] = np.argmax(V[:, T-1])
         
         
         for t in range(T-2, -1, -1):
             best_path[t] = BP[best_path[t+1], t+1]
-        
         return best_path
+
+
+    def viterbi(self, seq):
+        T = len(seq)
+        N = self.n_states
+        return self._viterbi_fast(seq, self.transition_matrix, self.emission_matrix, self.pi, T, N)
     
     def gen_viterbi(self, seq, method="max_p"):
 
