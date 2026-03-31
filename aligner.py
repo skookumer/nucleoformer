@@ -28,7 +28,7 @@ Use the image
 insulator, silencer, enhancher: regulatory regions of interest
 '''
 
-state_dict = {
+state_dict_old = {
     "promoter": ["promoter", "TATA_box", "CAAT_signal", "GC_rich_promoter_region", "CAGE_cluster", "nucleotide_motif", 
                  "nucleotide_cleavage_site", "conserved_region", "replication_start_site",],
     "immune": ["V_gene_segment", "D_gene_segment", "J_gene_segment", "C_gene_segment"],
@@ -60,6 +60,23 @@ state_dict = {
              ]
 }
 
+state_dict = {
+    "CAGE_cluster": ["CAGE_cluster"],
+    "promoter": ["synthetic_promoter", "nucleotide_motif", "nucleotide_cleavage_site", 
+                 "DNaseI_hypersensitive_site", "protein_binding_site", "response_element", 
+                "transcriptional_cis_regulatory_region", "GC_rich_promoter_region",
+                "CpG_island", "CAAT_signal", "TATA_box"],
+    "enhancer": ["enhancer"],
+    "regulatory": ["silencer", "insulator"],
+    "ncRNA": ["miRNA", "tRNA", "rRNA", "snRNA", "snoRNA", "scRNA", "scaRNA", 
+            "Y_RNA", "RNase_MRP_RNA", "RNase_P_RNA", "telomerase_RNA", "vault_RNA", "pseudogene",],
+    "repeat": ["microsatellite", "minisatellite", "mobile_genetic_element", "tandem_repeat", "repeat_region",
+               "dispersed_repeat", "direct_repeat", "repeat_instability_region", "centromere"],
+    "exon": ["exon", "CDS"],
+    "lnc_RNA": ["lnc_RNA"],
+    "intron": ["primary_transcript", "transcript", "mRNA"],
+    "intergenic": ["gene", "region"]
+}
 
 if sys.platform == "win32":
     reference_path = Path("C:/Users/Eric Arnold/Documents/reference_genome")
@@ -119,12 +136,25 @@ def make_map_fast(chr_map, read_indices):
 
 class GeneLoader:
 
-    def __init__(self, name, toprint=False, random_seed=None):
+    def __init__(self, name, path=None, toprint=False, random_seed=None):
+
+        if sys.platform == "win32":
+            reference_path = Path("C:/Users/Eric Arnold/Documents/reference_genome")
+        elif 'google.colab' in sys.modules:
+            reference_path = Path("/content/drive/MyDrive/nucleoformer/")
+        else:
+            reference_path = Path("/mnt/c/Users/Eric Arnold/Documents/reference_genome")
+
+        ncbi_path = reference_path / "ncbi_dataset/data/GCF_000001405.40"
 
         self.idx = 1
 
-        if random_seed != None:
+        if random_seed is not None:
             np.random.seed=random_seed
+
+        if path is not None:
+            ncbi_path = Path(__file__).parent / path
+            reference_path = Path(__file__).parent / path
 
         # self.genome_fasta = get_reference_fasta(name)
         self.genome = pysam.FastaFile(ncbi_path / f"{name}.fa")
@@ -148,13 +178,41 @@ class GeneLoader:
             new_columns=["chrom", "source", "type", "start", "end", "score", "strand", "phase", "attributes"]
         )
 
+        mrna = self.annot.filter(pl.col("type") == "mRNA")
+        upstream = 1000
+        synthetic_promoters = pl.concat([
+            # forward strand
+            mrna.filter(pl.col("strand") == "+").with_columns([
+                (pl.col("start") - upstream).alias("start"),
+                pl.col("start").alias("end"),
+                pl.lit("synthetic_promoter").alias("type")
+            ]),
+            # reverse strand
+            mrna.filter(pl.col("strand") == "-").with_columns([
+                pl.col("end").alias("start"),
+                (pl.col("end") + upstream).alias("end"),
+                pl.lit("synthetic_promoter").alias("type")
+            ])
+        ])
+
+        self.annot = pl.concat([self.annot, synthetic_promoters])
+
+        # if toprint: #save region counts
+        #     (self.annot
+        #         .with_columns((pl.col("end") - pl.col("start")).alias("span"))
+        #         .group_by("type")
+        #         .agg(pl.col("span").sum().alias("total_bp"))
+        #         .sort("total_bp", descending=True)
+        #         .write_csv("type_bp_counts.csv")
+        #     )
+
         chrom_offsets = {}  # chrom -> offset for array filling
         offset_ranges = {}  # range -> chrom for nt_map lookup
         offset = 0
         for chrom in self.genome.references:
             size = self.genome.get_reference_length(chrom)
             chrom_offsets[chrom] = offset
-            offset_ranges[range(offset, offset + size - 1)] = chrom
+            offset_ranges[range(offset, offset + size)] = chrom
             offset += size
         total_size = offset
 
@@ -172,7 +230,7 @@ class GeneLoader:
         def in_range(inner, outer):
             return inner.start >= outer.start and inner.stop <= outer.stop
 
-        state_array = self.merge_nearby_states(state_array, 0, max_gap=24000)
+        # state_array = self.merge_nearby_states(state_array, 0, max_gap=24000)
 
         change_points = np.where(np.diff(state_array))[0]
         starts = np.concatenate([[0], change_points + 1])
@@ -203,6 +261,23 @@ class GeneLoader:
             "chrom_start": chrom_starts,
             "chrom_end": chrom_ends
         })
+
+        self.nt_map = self.nt_map.filter(pl.col("state") != 255)
+
+        for i in range(len(self.nt_map)):
+            row = self.nt_map.row(i, named=True)
+            global_len = row["end"] - row["start"]
+            chrom_len = row["chrom_end"] - row["chrom_start"]
+            if global_len != chrom_len:
+                print(self.nt_map[max(0, i-3):min(len(self.nt_map), i+3)])
+                break
+        
+        for i in range(1, len(self.nt_map)):
+            if self.nt_map["chrom"][i] != self.nt_map["chrom"][i-1]:
+                print(self.nt_map.with_row_index()[max(0, i-3):i+3])
+                break
+
+        
         self.state_array = state_array
         self.max_len = len(state_array)
         self.states = list(state_encoding.keys())
@@ -279,8 +354,10 @@ class GeneLoader:
         ucsc_key = self.refseq_aliases[row["chrom"]]
         conservation = self.bw.values(f"{ucsc_key}", start, end)
 
-        start = max(0, row["start"] - region)
-        end = min(max_L, row["end"] + region + 1)
+        offset = row["start"] - row["chrom_start"]
+
+        start = max(offset, row["start"] - region)
+        end = min(offset + max_L, row["end"] + region + 1)
         states = self.state_array[start: end]
         if with_row:
             entry =  {"seq": seq, "conv": np.array(conservation), "states": states}
