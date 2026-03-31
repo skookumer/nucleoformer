@@ -6,8 +6,9 @@ import polars as pl
 import polars.selectors as cs
 from numba import njit
 from numba.typed import List as JitList
-from numba import int32, typeof
+from numba import int32, typeof, types
 import torch
+import math
 
 home = Path(__file__).parent
 data_path = home / "popns"
@@ -30,6 +31,15 @@ class NSGA_II:
         self.loader = loader
         self.model = model
         self.tokenizer = tokenizer
+
+        if self.model is not None and self.tokenizer is not None:
+            if next(self.model.parameters()).is_cuda:
+                self.cuda = True
+            else:
+                self.cuda = False
+        else:
+            self.cuda = False
+        
         self.hmm = hmm
         self.fitness_functions = {
             "cos_dist": lambda x: self.cos_dist(x),
@@ -59,6 +69,8 @@ class NSGA_II:
         self.k = self.hmm.k
         self.master = self.make_master_dict()
 
+
+
     def make_master_dict(self):
         data = self.loader.get_idx(self.idx, with_row=True)
         return {"annot_idx": self.idx,
@@ -66,7 +78,7 @@ class NSGA_II:
                  "seq": list(data["seq"]),
                  "states": data["states"],
                  "conv_array": data["conv"],
-                 "embedding": self._encode([data["seq"]])[0],
+                 "embedding": self._encode_cuda([data["seq"]])[0] if self.cuda else self._encode_cpu([data["seq"]])[0],
                  "ll": self.get_likelihood_only(data["seq"])}
         
 
@@ -87,16 +99,18 @@ class NSGA_II:
         p_x = self.hmm.ll_only(enc_seq)
         return p_x
 
-    # def _encode(self, seqs):
-    #     if self.model is not None and self.tokenizer is not None:
-    #         inputs = self.tokenizer(seqs, return_tensors='pt', padding=True, truncation=True)["input_ids"]
-    #         with torch.no_grad():
-    #             hidden_states = self.model(inputs)[0] # [1, sequence_length, 768]
-    #         embedding_mean = hidden_states[0].detach().numpy().mean(axis=0)
-    #         return embedding_mean
-    #     return None
+    def _encode_cuda(self, seqs):
+        if self.model is not None and self.tokenizer is not None:
+            device = next(self.model.parameters()).device  # wherever the model lives
+            inputs = self.tokenizer(seqs, return_tensors='pt', padding=True, truncation=True)["input_ids"]
+            inputs = inputs.to(device)  # move input to same device as model
+            with torch.no_grad():
+                hidden_states = self.model(inputs)[0]
+            embedding_mean = hidden_states.detach().cpu().numpy().mean(axis=1)  # mean over sequence dim
+            return embedding_mean
+        return [None for _ in range(len(seqs))]
 
-    def _encode(self, seqs):
+    def _encode_cpu(self, seqs):
         if self.model is not None and self.tokenizer is not None:
             embeddings = []
             for seq in seqs:
@@ -104,12 +118,15 @@ class NSGA_II:
                 hidden_states = self.model(inputs)[0]
                 embeddings.append(hidden_states[0].detach().numpy().mean(axis=0))
             return np.array(embeddings)
-        return None
+        return [None for _ in range(len(seqs))]
 
     def get_embeddings(self):
         indices = [i for i in range(len(self.popn)) if self.popn[i]["live"] and self.popn[i]["update"]]
         seqs = ["".join(self.popn[i]["seq"]) for i in indices]
-        embeddings = self._encode(seqs)
+        if self.cuda:
+            embeddings = self._encode_cuda(seqs)
+        else:
+            embeddings = self._encode_cpu(seqs)
         if embeddings is not None:
             for i, idx in enumerate(indices):
                 self.popn[idx]["embedding"] = embeddings[i]
@@ -130,10 +147,6 @@ class NSGA_II:
     def set_update_flag(self):
         for entry in self.popn:
             entry["update"] = False
-
-
-
-        
 
     def load_popn(self):
         if self.popn_path.exists():
@@ -166,30 +179,29 @@ class NSGA_II:
             self.df.write_parquet(self.popn_path)
         
     @staticmethod
-    @njit(cache=True)
-    def fast_sort(fit_matrix, pop_cap):
+    @njit(cache=False)
+    def _fast_sort(fit_matrix, pop_cap, inner_template):
         N = fit_matrix.shape[0]
 
         #compute dominance relationships and first front
-        inner_list = typeof(JitList.empty_list(int32))
-        fronts = JitList.empty_list(inner_list)
+        fronts = JitList.empty_list(types.ListType(inner_template))
         first_front = JitList.empty_list(int32)
         fronts.append(first_front)
 
         dom_counts = np.zeros(N, dtype=np.int32)
-        dom_matrix = np.zeros((N, N), dtype=bool)
+        dom_matrix = np.zeros((N, N), dtype=np.uint8)
         for i in range(N):
             p = fit_matrix[i, :]
             for j in range(i + 1, N):
                 q = fit_matrix[j, :]
                 if np.all(p > q):
-                    dom_matrix[i][j] = True
+                    dom_matrix[i][j] = 1
                     dom_counts[j] += 1
                 elif np.all(q > p):
-                    dom_matrix[j][i] = True
+                    dom_matrix[j][i] = 1
                     dom_counts[i] += 1
             if dom_counts[i] == 0:
-                fronts[0].append(i)
+                fronts[0].append(np.int32(i))
         
         #find next front
         i = 0
@@ -197,35 +209,49 @@ class NSGA_II:
             front = JitList.empty_list(int32)
             for j in range(len(fronts[i])):
                 p = fronts[i][j]
-                p_dominates_q = np.where(dom_matrix[p, :])[0]
+                p_dominates_q = np.where(dom_matrix[p, :] > 0)[0]
                 for k in range(len(p_dominates_q)):
                     q = p_dominates_q[k]
                     dom_counts[q] -= 1
                     if dom_counts[q] == 0:
-                        front.append(q)
+                        front.append(np.int32(q))
             i += 1
             fronts.append(front)
 
+        last_front = JitList.empty_list(int32)
+        if len(fronts[0]) >= pop_cap:
+
+            result = np.zeros(pop_cap, dtype=np.int32)
+            for i in range(len(front)):
+                result[i] = fronts[0][i]
+
+            return result, 0, last_front
+
         #concat individuals and 
-        sorted_individuals = JitList.empty_list(int32)
+        sorted_individuals = np.zeros(N, dtype=np.int32)
+        count = 0
         for i in range(len(fronts)):
-            if len(sorted_individuals) + len(fronts[i]) < pop_cap:
+            if count + len(fronts[i]) <= pop_cap:
                 for j in range(len(fronts[i])):
-                    sorted_individuals.append(fronts[i][j])
+                    sorted_individuals[count] = fronts[i][j]
+                    count += 1
             else:
-                n_slots = pop_cap - len(sorted_individuals)
+                n_slots = pop_cap - count
                 if len(fronts[i]) <= 2:
                     for k in range(min(n_slots, len(fronts[i]))):
-                        sorted_individuals.append(fronts[i][k])
-                    return np.array(sorted_individuals), 0, JitList.empty_list(int32)
+                        sorted_individuals[count] = fronts[i][k]
+                        count += 1
+                    return sorted_individuals[:count], 0, last_front
                 else:
-                    return np.array(sorted_individuals), n_slots, fronts[i]
-        return np.array(sorted_individuals), 0, JitList.empty_list(int32)
+                    return sorted_individuals[:count], n_slots, fronts[i]
+        return sorted_individuals[:count], 0, last_front
     
     @staticmethod
-    @njit(cache=True)
-    def crowding_distance(fit_matrix, n_slots, last_front):
-        last_front = np.array(last_front, dtype=np.int32)
+    @njit(cache=False)
+    def _crowding_distance(fit_matrix, n_slots, last_front_list):
+        last_front = np.zeros(len(last_front_list), dtype=np.int32)
+        for i in range(len(last_front_list)):
+            last_front[i] = last_front_list[i]
         T = fit_matrix.shape[0]
         C = fit_matrix.shape[1]
         dists = np.zeros(T, dtype=np.float64)
@@ -251,12 +277,12 @@ class NSGA_II:
     def non_dominated_sort(self):
                 
         fit_matrix = np.array([np.array([
-            -entry["fitness"][o] if self.objectives[o]["reversed"] else entry["fitness"][o] for o in self.objectives
+            -entry["fitness"][o] if self.objectives[o]["reverse"] else entry["fitness"][o] for o in self.objectives
             ]) for entry in self.popn])
         
-        sorted_individuals, n_slots, last_front = self.fast_sort(fit_matrix, self.pop_cap)
+        sorted_individuals, n_slots, last_front = self._fast_sort(fit_matrix, self.pop_cap, JitList.empty_list(int32))
         if n_slots > 0:
-            last_front = self.crowding_distance(fit_matrix[last_front, :], n_slots, last_front)
+            last_front = self._crowding_distance(fit_matrix[last_front, :], n_slots, last_front)
             sorted_individuals = np.concatenate([sorted_individuals, last_front])
         return sorted_individuals #an array of sorted individual indices
         
@@ -267,7 +293,6 @@ class NSGA_II:
             unalive = list(set(range(len(self.popn))) - set(survivor_indices))
             for idx in unalive:
                 self.popn[idx]["live"] = False
-            self.save_popn(unalive)
             for i in sorted(unalive, reverse=True):
                 self.popn.pop(i)
             
@@ -287,7 +312,7 @@ class NSGA_II:
         return Levenshtein.distance(self.master["seq"], entry["seq"])
     
     def hmm_prob(self, entry):
-        return entry["ll"]
+        return entry["ll"] - self.master["ll"]
     
     def conv_dev(self, entry):
         total = self.master["conv_array"].sum()
@@ -443,6 +468,39 @@ class NSGA_II:
 
         self.popn.append(make_child(n1, o1, m1))
         self.popn.append(make_child(n2, o2, m2))
+
+    def cross_mutate_random(self, cross_rate, mut_rate):
+        indices = np.random.permutation(len(self.popn))
+        if len(indices) % 2 != 0:
+            indices = indices[:-1]
+        pairs = indices.reshape(-1, 2)
+
+        n_keep = round(cross_rate * len(pairs))
+        pairs = pairs[:n_keep]
+        
+        if type(mut_rate) == float:
+            n_muts = math.ceil(len(self.master["seq"]) * mut_rate)
+        elif type(mut_rate) == int:
+            n_muts = mut_rate
+
+        for pair in pairs:
+            seg = np.random.randint(2, 5)
+            self.crossover(pair[0], pair[1], seg)
+
+            for index in (-1, -2):
+                current_muts = self.popn[index]["mut_array"].sum()
+                while self.popn[index]["mut_array"].sum() - current_muts < n_muts and (self.popn[index]["mut_array"] == 0).any():
+                    self.random_mutate_entry(index)
+
+    def update_entries(self):
+        self.get_mod_ll()
+        self.get_mod_conv_score()
+        self.get_embeddings()
+        self.compute_total_fitness()
+        self.set_update_flag()
+
+
+        
 
 
 
