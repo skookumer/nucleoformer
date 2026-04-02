@@ -264,18 +264,20 @@ class GeneLoader:
 
         self.nt_map = self.nt_map.filter(pl.col("state") != 255)
 
-        for i in range(len(self.nt_map)):
-            row = self.nt_map.row(i, named=True)
-            global_len = row["end"] - row["start"]
-            chrom_len = row["chrom_end"] - row["chrom_start"]
-            if global_len != chrom_len:
-                print(self.nt_map[max(0, i-3):min(len(self.nt_map), i+3)])
-                break
-        
-        for i in range(1, len(self.nt_map)):
-            if self.nt_map["chrom"][i] != self.nt_map["chrom"][i-1]:
-                print(self.nt_map.with_row_index()[max(0, i-3):i+3])
-                break
+        if toprint:
+            print("first chromosome transition")
+            for i in range(len(self.nt_map)):
+                row = self.nt_map.row(i, named=True)
+                global_len = row["end"] - row["start"]
+                chrom_len = row["chrom_end"] - row["chrom_start"]
+                if global_len != chrom_len:
+                    print(self.nt_map[max(0, i-3):min(len(self.nt_map), i+3)])
+                    break
+            
+            for i in range(1, len(self.nt_map)):
+                if self.nt_map["chrom"][i] != self.nt_map["chrom"][i-1]:
+                    print(self.nt_map.with_row_index()[max(0, i-3):i+3])
+                    break
 
         
         self.state_array = state_array
