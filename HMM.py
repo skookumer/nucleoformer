@@ -310,8 +310,12 @@ class HMM:
         G = A + B - p_x
         return np.argmax(G, axis=0), p_x
     
-    def ll_only(self, seq):
-        A = self.fwd(self.n_states, seq, self.pi, self.emission_matrix, self.transition_matrix)
+    def ll_only(self, seq, initial_state=None):
+        if initial_state == None:
+            p_0 = self.pi
+        else:
+            p_0 = self.transition_matrix[:, initial_state]
+        A = self.fwd(self.n_states, seq, p_0, self.emission_matrix, self.transition_matrix)
         p_x = logsumexp(A[:, -1])
         return p_x
 
