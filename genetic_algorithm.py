@@ -79,7 +79,7 @@ class NSGA_II:
                  "states": data["states"],
                  "conv_array": data["conv"],
                  "embedding": self._encode_cuda([data["seq"]])[0] if self.cuda else self._encode_cpu([data["seq"]])[0],
-                 "ll": self.get_likelihood_only(data["seq"])}
+                 "ll": self.get_likelihood_only(data["seq"], data["states"][self.k - 2])}
         
 
     def gen_entry(self):
@@ -94,9 +94,9 @@ class NSGA_II:
                  "update": True}
         return entry
     
-    def get_likelihood_only(self, seq):
+    def get_likelihood_only(self, seq, initial_state):
         enc_seq = self.hmm.tokenize(seq)
-        p_x = self.hmm.ll_only(enc_seq)
+        p_x = self.hmm.ll_only(enc_seq, initial_state)
         return p_x
 
     def _encode_cuda(self, seqs):
@@ -133,7 +133,7 @@ class NSGA_II:
     
     def get_mod_ll(self):
         indices = [i for i in range(len(self.popn)) if self.popn[i]["live"] and self.popn[i]["update"]]
-        lls = [self.get_likelihood_only(self.popn[i]["seq"]) for i in indices]
+        lls = [self.get_likelihood_only(self.popn[i]["seq"], self.master["states"][self.k - 2]) for i in indices]
         for i, idx in enumerate(indices):
             self.popn[idx]["ll"] = lls[i]
     
@@ -222,7 +222,7 @@ class NSGA_II:
         if len(fronts[0]) >= pop_cap:
 
             result = np.zeros(pop_cap, dtype=np.int32)
-            for i in range(len(front)):
+            for i in range(len(fronts[0])):
                 result[i] = fronts[0][i]
 
             return result, 0, last_front
