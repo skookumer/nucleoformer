@@ -2,13 +2,14 @@ import sys
 import polars as pl
 import json
 from pathlib import Path
-from pyfaidx import Fasta
+# from pyfaidx import Fasta
 import pysam
 import requests
 from pprint import pprint
 import numpy as np
 from numba import njit
 import pyBigWig
+import os
 
 '''
 Notes 3/24
@@ -78,60 +79,62 @@ state_dict = {
     "intergenic": ["gene", "region"]
 }
 
-if sys.platform == "win32":
-    reference_path = Path("C:/Users/Eric Arnold/Documents/reference_genome")
-else:
-    reference_path = Path("/mnt/c/Users/Eric Arnold/Documents/reference_genome")
+'''edp new; genecode'''
 
-ncbi_path = reference_path / "ncbi_dataset/data/GCF_000001405.40"
+# if sys.platform == "win32":
+#     reference_path = Path("C:/Users/Eric Arnold/Documents/reference_genome")
+# else:
+#     reference_path = Path("/mnt/c/Users/Eric Arnold/Documents/reference_genome")
 
-reference_files = [f for f in reference_path.iterdir()]
-names = {"hg19": "GCF_000001405.21_GRCh37.p9_genomic.fna"}
+# ncbi_path = reference_path / "ncbi_dataset/data/GCF_000001405.40"
 
-data_path = Path(__file__).parent / "data"
-urns = [u for u in data_path.iterdir()]
+# reference_files = [f for f in reference_path.iterdir()]
+# names = {"hg19": "GCF_000001405.21_GRCh37.p9_genomic.fna"}
 
-with open("metadata.jsonl", "r", encoding="utf-8") as f:
-    lines = f.readlines()
+# data_path = Path(__file__).parent / "data"
+# urns = [u for u in data_path.iterdir()]
 
-metadata = {}
-for line in lines:
-    metadata.update(json.loads(line))
+# with open("metadata.jsonl", "r", encoding="utf-8") as f:
+#     lines = f.readlines()
 
-def get_reference_fasta(name):
-    filepath = reference_path / names[name]
-    if filepath.exists():
-        return Fasta(filepath)
-    else:
-        return None
+# metadata = {}
+# for line in lines:
+#     metadata.update(json.loads(line))
 
-def get_read_indices(name):
-    df = pl.read_csv(
-            reference_path / f"{name}.bed",
-            separator="\t",
-            has_header=False,
-            new_columns=["chrom", "start", "end"],
-            columns=[0, 1, 2], # Only grab the first 3 columns to save RAM
-            dtypes={"chrom": pl.Utf8, "start": pl.Int64, "end": pl.Int64})
-    return df
+# def get_reference_fasta(name):
+#     filepath = reference_path / names[name]
+#     if filepath.exists():
+#         return Fasta(filepath)
+#     else:
+#         return None
+
+# def get_read_indices(name):
+#     df = pl.read_csv(
+#             reference_path / f"{name}.bed",
+#             separator="\t",
+#             has_header=False,
+#             new_columns=["chrom", "start", "end"],
+#             columns=[0, 1, 2], # Only grab the first 3 columns to save RAM
+#             dtypes={"chrom": pl.Utf8, "start": pl.Int64, "end": pl.Int64})
+#     return df
 
 
-def get_candidate_data(urn, fasta):
-    '''Specifically for retrieving the chromosomes associated with Mave DB datasets'''
-    chr = metadata[urn]["chr"]
-    start = int(metadata[urn]["start"])
-    end = int(metadata[urn]["end"])
-    seq = fasta[chr_to_refseq[chr]][start - 1:end]
-    return seq
+# def get_candidate_data(urn, fasta):
+#     '''Specifically for retrieving the chromosomes associated with Mave DB datasets'''
+#     chr = metadata[urn]["chr"]
+#     start = int(metadata[urn]["start"])
+#     end = int(metadata[urn]["end"])
+#     seq = fasta[chr_to_refseq[chr]][start - 1:end]
+#     return seq
 
-@njit
-def make_map_fast(chr_map, read_indices):
-    for i in range(0, len(read_indices), 2):
-        start = read_indices[i]
-        end = read_indices[i + 1]
-        for j in range(start, end):
-            chr_map[j] += 1
-    return chr_map / chr_map.max()
+# @njit
+# def make_map_fast(chr_map, read_indices):
+#     for i in range(0, len(read_indices), 2):
+#         start = read_indices[i]
+#         end = read_indices[i + 1]
+#         for j in range(start, end):
+#             chr_map[j] += 1
+#     return chr_map / chr_map.max()
 
 
 class GeneLoader:
@@ -140,7 +143,7 @@ class GeneLoader:
 
         if sys.platform == "win32":
             reference_path = Path("C:/Users/Eric Arnold/Documents/reference_genome")
-        elif 'google.colab' in sys.modules:
+        elif os.path.exists("/content/drive"):
             reference_path = Path("/content/drive/MyDrive/nucleoformer/")
         else:
             reference_path = Path("/mnt/c/Users/Eric Arnold/Documents/reference_genome")
@@ -283,6 +286,7 @@ class GeneLoader:
         self.state_array = state_array
         self.max_len = len(state_array)
         self.states = list(state_encoding.keys())
+        self.state_dict = state_dict
         
         if toprint:
 
