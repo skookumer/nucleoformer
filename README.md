@@ -1,6 +1,8 @@
 # nucleoformer
 evaluation suite for nucleotide transformer models
 
+See the presentation poster PDF for some results.
+
 
 # QUICK START
 
