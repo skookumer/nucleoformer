@@ -32,7 +32,7 @@ Colab: just run all the cells in sequence. These install the necessary packages 
 
 I dowloaded my data directly from UCSC golden path and NCBI. The key was to download all NCBI files including the gff and then combine them into a single document.
 
-HG38 + annotations:
+HG38 + annotations (linux terminal):
 
 ```python
 curl -o datasets 'https://ftp.ncbi.nlm.nih.gov/pub/datasets/command-line/v2/linux-amd64/datasets'
