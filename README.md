@@ -5,6 +5,8 @@ See the presentation poster PDF for some results. I tried exporting the analysis
 
 https://colab.research.google.com/drive/1P-IQJ0G61caOJ13-Lp3JopQOR3rwokVv
 
+This notebook is honestly a mess, but it's got a lot of code for different tests.
+
 # QUICK START
 
 ## Project overview
