@@ -86,7 +86,7 @@ Scalability: using the model gradients to target nucleotide mutation has dropped
 
 ## Evidence of Correctness:
 
-It's difficult to say that a genetic algorithm is producing a "correct" result. Empirically, we can observe a pareto front forming between the objectives. A few tests have been included in old_scripts that test HMM output. The suite correctly identifies weak spots and exhibits variation in an expected manner across different objectives.
+It's difficult to say that a genetic algorithm is producing a "correct" result. Empirically, we can observe a pareto front forming between the objectives. A few tests have been included in old_scripts that test HMM output. The suite correctly identifies weak spots and exhibits variation in an expected manner across different objectives. You can see the poster and the colab notebook for experimental results.
 
 ## Final Reflection:
 
