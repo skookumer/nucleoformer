@@ -1,4 +1,7 @@
 # nucleoformer
+
+VIDEO LINK: https://youtu.be/ljKD5S01VK8
+
 evaluation suite for nucleotide transformer models
 
 See the presentation poster PDF for some results. I tried exporting the analysis notebook from colab but it unfortunately removes all the figures. you can view it here:
